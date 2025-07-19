@@ -1,0 +1,10 @@
+# Import the necessary build functions.
+Import('*')
+
+# Register the Python file that defines the SimObject's parameters.
+SimObject('MemTracer.py', sim_objects=['MemTracer'])
+
+# Register the C++ source file that contains the implementation.
+Source('mem_tracer.cc')
+
+DebugFlag('MemTracer')
