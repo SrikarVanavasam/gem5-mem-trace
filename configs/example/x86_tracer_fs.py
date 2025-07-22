@@ -100,23 +100,28 @@ board = X86Board(
 
 
 # The command to run after the system has booted and switched to Timing CPU.
-workload_command = "sleep 1;"
+# workload_command = "m5 exit; sleep 1; m5 exit;"
+workload_command = (
+    "m5 exit; dd if=/dev/zero of=/dev/null bs=1M count=1024; m5 exit;"
+)
 
 # Set the workload using the systemd-based Ubuntu image.
+default_args = board.get_default_kernel_args()
+custom_args = [
+    arg if not arg.startswith("root=") else "root=/dev/sda2"
+    for arg in default_args
+]
 board.set_kernel_disk_workload(
     kernel=obtain_resource("x86-linux-kernel-6.8.0-52-generic"),
     disk_image=obtain_resource("x86-ubuntu-24.04-img"),
     readfile_contents=workload_command,
+    kernel_args=custom_args,
 )
 
 
 def exit_event_handler():
-    # First m5 exit (from kernel boot)
-    print("First exit: kernel booted")
-    yield False
-
-    # Second m5 exit (from after_boot.sh starting)
-    print("Second exit: Started `after_boot.sh` script")
+    # m5 exit (from after_boot.sh starting)
+    print("First exit: Started `after_boot.sh` script")
     print("Switching to Timing CPU")
     processor.switch()
 
@@ -126,8 +131,8 @@ def exit_event_handler():
 
     yield False
 
-    # Third m5 exit (from after_boot.sh finishing)
-    print("Third exit: Finished `after_boot.sh` script")
+    # m5 exit (from after_boot.sh finishing)
+    print("Second exit: Finished `after_boot.sh` script")
 
     # Now, stop tracing after our workload_command runs
     print("Stopping trace collection.")
