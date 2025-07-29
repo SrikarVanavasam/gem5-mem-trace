@@ -45,9 +45,12 @@ class MemTracer : public ClockedObject
     class MemSidePort : public QueuedRequestPort
     {
       public:
-        MemSidePort(const std::string& _name, MemTracer& _parent);
+        MemSidePort(const std::string& _name, MemTracer& _parent, PortID _id);
 
       protected:
+        /** Packet queues */
+        ReqPacketQueue reqQueue;
+        SnoopRespPacketQueue snoopRespQueue;
         bool
         recvTimingResp(PacketPtr pkt) override;
 
@@ -63,25 +66,28 @@ class MemTracer : public ClockedObject
         void
         recvRangeChange() override
         {
-            parent.cpu_side_port.sendRangeChange();
+            parent.cpu_side_ports[id]->sendRangeChange();
         }
 
         bool
         isSnooping() const override
         {
-            return parent.cpu_side_port.isSnooping();
+            return parent.cpu_side_ports[id]->isSnooping();
         }
 
       private:
         MemTracer& parent;
+        const PortID id;
     };
 
     class CPUSidePort : public QueuedResponsePort
     {
       public:
-        CPUSidePort(const std::string& _name, MemTracer& _parent);
+        CPUSidePort(const std::string& _name, MemTracer& _parent, PortID _id);
 
       protected:
+        /** Packet queue */
+        RespPacketQueue respQueue;
         Tick
         recvAtomic(PacketPtr pkt) override;
         bool
@@ -94,7 +100,7 @@ class MemTracer : public ClockedObject
         AddrRangeList
         getAddrRanges() const override
         {
-            return parent.mem_side_port.getAddrRanges();
+            return parent.mem_side_ports[id]->getAddrRanges();
         }
 
         bool
@@ -105,17 +111,15 @@ class MemTracer : public ClockedObject
 
       private:
         MemTracer& parent;
+        const PortID id;
     };
 
     bool
     trySatisfyFunctional(PacketPtr pkt);
 
-    MemSidePort mem_side_port;
-    CPUSidePort cpu_side_port;
-
-    ReqPacketQueue reqQueue;
-    RespPacketQueue respQueue;
-    SnoopRespPacketQueue snoopRespQueue;
+    // Use a vector of ports for both sides to support multiple channels
+    std::vector<MemSidePort*> mem_side_ports;
+    std::vector<CPUSidePort*> cpu_side_ports;
 
     std::fstream trace_file;
     std::string trace_path;

@@ -8,8 +8,12 @@ class MemTracer(ClockedObject):
     cxx_header = "mem_tracer/mem_tracer.hh"
     cxx_class = "gem5::MemTracer"
 
-    mem_side = RequestPort("This port sends requests and receives responses")
-    cpu_side = ResponsePort("This port receives requests and sends responses")
+    mem_side = VectorRequestPort(
+        "This port sends requests and receives responses"
+    )
+    cpu_side = VectorResponsePort(
+        "This port receives requests and sends responses"
+    )
 
     trace_file = Param.String(
         "dram_trace.bin", "Path to the binary output trace file"

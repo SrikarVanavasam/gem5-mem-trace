@@ -249,3 +249,14 @@ class DDR4_2400_4x16(DDR4_2400_16x4):
     IDD4R = "243mA"
     IDD5 = "280mA"
     IDD3P1 = "41mA"
+
+
+class DDR4_2666_8x8(DDR4_2400_8x8):
+    tCK = "0.75ns"
+    tCL = "14.25ns"
+    tRCD = "14.25ns"
+    tRP = "14.25ns"
+    tRAS = "33ns"
+    tWR = "15ns"
+    tRRD_L = "5.3ns"
+    tXAW = "23ns"

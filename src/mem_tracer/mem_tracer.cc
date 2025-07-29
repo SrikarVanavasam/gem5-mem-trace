@@ -8,12 +8,13 @@
 namespace gem5 {
 
 MemTracer::MemTracer(const MemTracerParams& p)
-    : ClockedObject(p), mem_side_port(name() + ".mem_side", *this),
-      cpu_side_port(name() + ".cpu_side", *this),
-      reqQueue(*this, mem_side_port), respQueue(*this, cpu_side_port),
-      snoopRespQueue(*this, mem_side_port), trace_path(p.trace_file),
-      records_written(0), tracing_enabled(false)
+    : ClockedObject(p), trace_path(p.trace_file), records_written(0),
+      tracing_enabled(false)
 {
+    // The ports will be created dynamically when getPort is called
+    // with specific port names and indices. For now, we just initialize
+    // empty vectors that will be populated as needed.
+
     trace_file.open(trace_path, std::ios::out | std::ios::in |
                                     std::ios::binary | std::ios::trunc);
     if (!trace_file.is_open()) {
@@ -44,22 +45,46 @@ MemTracer::~MemTracer()
 
         trace_file.close();
     }
+
+    // Clean up dynamically created ports
+    for (auto port : mem_side_ports) { delete port; }
+    for (auto port : cpu_side_ports) { delete port; }
 }
 
 void
 MemTracer::init()
 {
-    if (!cpu_side_port.isConnected() || !mem_side_port.isConnected())
-        fatal("Memory tracer is not connected on both sides.\n");
+    // Only check ports that have been created
+    for (auto port : cpu_side_ports) {
+        if (!port->isConnected())
+            fatal("Memory tracer is not connected on cpu side.\n");
+    }
+
+    for (auto port : mem_side_ports) {
+        if (!port->isConnected())
+            fatal("Memory tracer is not connected on mem side.\n");
+    }
 }
 
 Port&
 MemTracer::getPort(const std::string& if_name, PortID idx)
 {
     if (if_name == "mem_side") {
-        return mem_side_port;
+        // Ensure we have enough ports
+        while (mem_side_ports.size() <= (size_t)idx) {
+            mem_side_ports.push_back(new MemSidePort(
+                name() + ".mem_side" + std::to_string(mem_side_ports.size()),
+                *this, mem_side_ports.size()));
+        }
+        return *mem_side_ports[idx];
     } else if (if_name == "cpu_side") {
-        return cpu_side_port;
+        // Ensure we have enough ports
+        while (cpu_side_ports.size() <= (size_t)idx) {
+            cpu_side_ports.push_back(new CPUSidePort(
+                name() + ".cpu_side" + std::to_string(cpu_side_ports.size()),
+                *this, cpu_side_ports.size()));
+        }
+        return *cpu_side_ports[idx];
     } else {
         return ClockedObject::getPort(if_name, idx);
     }
@@ -68,8 +93,18 @@ MemTracer::getPort(const std::string& if_name, PortID idx)
 bool
 MemTracer::trySatisfyFunctional(PacketPtr pkt)
 {
-    return cpu_side_port.trySatisfyFunctional(pkt) ||
-           mem_side_port.trySatisfyFunctional(pkt);
+    // Try to satisfy the functional request on any port
+    for (auto& port : cpu_side_ports) {
+        if (port->trySatisfyFunctional(pkt)) {
+            return true;
+        }
+    }
+    for (auto& port : mem_side_ports) {
+        if (port->trySatisfyFunctional(pkt)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void
@@ -89,7 +124,7 @@ MemTracer::stopTrace()
 void
 MemTracer::recordPacket(PacketPtr pkt)
 {
-    if (!tracing_enabled) { return; }
+    if (!tracing_enabled || (!pkt->isRead() && !pkt->isWrite())) { return; }
 
     TraceRecord record;
     uint64_t packed_data = 0;
@@ -109,9 +144,11 @@ MemTracer::recordPacket(PacketPtr pkt)
 }
 
 MemTracer::MemSidePort::MemSidePort(const std::string& _name,
-                                    MemTracer& _parent)
-    : QueuedRequestPort(_name, _parent.reqQueue, _parent.snoopRespQueue),
-      parent(_parent)
+                                    MemTracer& _parent, PortID _id)
+    : QueuedRequestPort(_name, reqQueue, snoopRespQueue),
+      reqQueue(_parent, *this, _name + ".reqQueue"),
+      snoopRespQueue(_parent, *this, false, _name + ".snoopRespQueue"),
+      parent(_parent), id(_id)
 {
 }
 
@@ -119,7 +156,7 @@ bool
 MemTracer::MemSidePort::recvTimingResp(PacketPtr pkt)
 {
     const Tick when = curTick();
-    parent.cpu_side_port.schedTimingResp(pkt, when);
+    parent.cpu_side_ports[id]->schedTimingResp(pkt, when);
     return true;
 }
 
@@ -129,25 +166,27 @@ MemTracer::MemSidePort::recvFunctionalSnoop(PacketPtr pkt)
     if (parent.trySatisfyFunctional(pkt)) {
         pkt->makeResponse();
     } else {
-        parent.cpu_side_port.sendFunctionalSnoop(pkt);
+        parent.cpu_side_ports[id]->sendFunctionalSnoop(pkt);
     }
 }
 
 Tick
 MemTracer::MemSidePort::recvAtomicSnoop(PacketPtr pkt)
 {
-    return parent.cpu_side_port.sendAtomicSnoop(pkt);
+    return parent.cpu_side_ports[id]->sendAtomicSnoop(pkt);
 }
 
 void
 MemTracer::MemSidePort::recvTimingSnoopReq(PacketPtr pkt)
 {
-    parent.cpu_side_port.sendTimingSnoopReq(pkt);
+    parent.cpu_side_ports[id]->sendTimingSnoopReq(pkt);
 }
 
 MemTracer::CPUSidePort::CPUSidePort(const std::string& _name,
-                                    MemTracer& _parent)
-    : QueuedResponsePort(_name, _parent.respQueue), parent(_parent)
+                                    MemTracer& _parent, PortID _id)
+    : QueuedResponsePort(_name, respQueue),
+      respQueue(_parent, *this, false, _name + ".respQueue"),
+      parent(_parent), id(_id)
 {
 }
 
@@ -155,7 +194,7 @@ Tick
 MemTracer::CPUSidePort::recvAtomic(PacketPtr pkt)
 {
     // No delay, just forward
-    return parent.mem_side_port.sendAtomic(pkt);
+    return parent.mem_side_ports[id]->sendAtomic(pkt);
 }
 
 bool
@@ -163,7 +202,7 @@ MemTracer::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
     parent.recordPacket(pkt);
     const Tick when = curTick();
-    parent.mem_side_port.schedTimingReq(pkt, when);
+    parent.mem_side_ports[id]->schedTimingReq(pkt, when);
     return true;
 }
 
@@ -173,7 +212,7 @@ MemTracer::CPUSidePort::recvFunctional(PacketPtr pkt)
     if (parent.trySatisfyFunctional(pkt)) {
         pkt->makeResponse();
     } else {
-        parent.mem_side_port.sendFunctional(pkt);
+        parent.mem_side_ports[id]->sendFunctional(pkt);
     }
 }
 
@@ -181,7 +220,7 @@ bool
 MemTracer::CPUSidePort::recvTimingSnoopResp(PacketPtr pkt)
 {
     const Tick when = curTick();
-    parent.mem_side_port.schedTimingSnoopResp(pkt, when);
+    parent.mem_side_ports[id]->schedTimingSnoopResp(pkt, when);
     return true;
 }
 
