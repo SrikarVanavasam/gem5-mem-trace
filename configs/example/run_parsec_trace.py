@@ -1,3 +1,4 @@
+import argparse
 from typing import (
     List,
     Sequence,
@@ -34,6 +35,12 @@ from gem5.simulate.exit_event import ExitEvent
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 
+# Parse arguments first
+parser = argparse.ArgumentParser()
+parser.add_argument("benchmark", help="The PARSEC benchmark to run.")
+parser.add_argument("trace_file", help="The output file for the memory trace.")
+args = parser.parse_args()
+
 requires(
     isa_required=ISA.X86,
     coherence_protocol_required=CoherenceProtocol.MESI_THREE_LEVEL,
@@ -62,7 +69,7 @@ class TracedMemorySystem(AbstractMemorySystem):
         delay_ports = []
         for i in range(len(mem_ports)):
             delay = self.delays[i]
-            # Configure the delay with 350ns latency
+            # Configure the delay with 380ns latency
             delay.read_req = "380ns"
             delay.read_resp = "380ns"
             delay.write_req = "380ns"
@@ -101,9 +108,12 @@ class TracedMemorySystem(AbstractMemorySystem):
         return self.mem_system.get_uninterleaved_range()
 
 
-NUM_CORES = 1
+NUM_CORES = 8
+NUM_L3_BANKS = 48
 
-# The order of instantiation can be important.
+# NUM_CORES = 1
+# NUM_L3_BANKS = 1
+
 processor = SimpleSwitchableProcessor(
     starting_core_type=CPUTypes.KVM,
     switch_core_type=CPUTypes.TIMING,
@@ -120,12 +130,14 @@ cache_hierarchy = MESIThreeLevelCacheHierarchy(
     l1i_assoc=8,
     l2_size="2MiB",
     l2_assoc=16,
-    l3_size="105MiB",
-    l3_assoc=15,
-    num_l3_banks=NUM_CORES,
+    l3_size="300MiB",
+    l3_assoc=20,
+    num_l3_banks=NUM_L3_BANKS,
 )
 
 memory = TracedMemorySystem("3GiB")
+# Update the tracer to use the specified trace file
+memory.tracer.trace_file = args.trace_file
 
 board = X86Board(
     clk_freq="3GHz",
@@ -136,8 +148,7 @@ board = X86Board(
 
 
 # The command to run after the system has booted and switched to Timing CPU.
-# workload_command = "m5 exit; dd if=/dev/zero of=/dev/null bs=1M count=1024; m5 exit;"
-workload_command = "/bin/bash"
+workload_command = f"m5 exit; /home/gem5/parsec-benchmark/bin/parsecmgmt -a run -p {args.benchmark} -i simsmall -n 8; m5 exit;"
 
 # Set the workload using the systemd-based Ubuntu image.
 default_args = board.get_default_kernel_args()
@@ -150,7 +161,6 @@ board.set_kernel_disk_workload(
     kernel=KernelResource(
         "/fast-lab-share/srikarv2/gem5-mem-trace/vmlinux-x86-6.8.0-71-generic"
     ),
-    # disk_image=obtain_resource("x86-ubuntu-24.04-img"),
     disk_image=DiskImageResource(
         "/fast-lab-share/srikarv2/gem5-mem-trace/x86-ubuntu-24.04-parsec-img"
     ),
@@ -161,7 +171,6 @@ board.set_kernel_disk_workload(
 
 def exit_event_handler():
     # m5 exit (from after_boot.sh starting)
-    print("First exit: Finished boot")
     print("Switching to Timing CPU")
     processor.switch()
 
@@ -170,9 +179,6 @@ def exit_event_handler():
     memory.tracer.startTrace()
 
     yield False
-
-    # m5 exit (from after_boot.sh finishing)
-    print("Second exit: Finished App")
 
     # Now, stop tracing after our workload_command runs
     print("Stopping trace collection.")
